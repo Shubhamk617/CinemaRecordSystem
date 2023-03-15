@@ -7,6 +7,8 @@ import java.net.URI;
 import java.util.List;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.json.MappingJacksonValue;
@@ -21,13 +23,20 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import com.cinemarecords.clientProxy.ReviewSystemProxy;
+import com.cinemarecords.clientProxy.TicketSystemProxy;
 import com.cinemarecords.exceptions.MovieNotFoundException;
 import com.cinemarecords.model.Movie;
+import com.cinemarecords.model.Review;
+import com.cinemarecords.model.Ticket;
 import com.cinemarecords.service.MovieServices;
 import com.fasterxml.jackson.databind.ser.FilterProvider;
 import com.fasterxml.jackson.databind.ser.impl.SimpleBeanPropertyFilter;
 import com.fasterxml.jackson.databind.ser.impl.SimpleFilterProvider;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
+import io.github.resilience4j.retry.annotation.Retry;
 import jakarta.validation.Valid;
 
 /**
@@ -40,8 +49,16 @@ import jakarta.validation.Valid;
 @RequestMapping("/movie")
 public class MovieController {
 
+	private Logger logger = LoggerFactory.getLogger(MovieController.class);
+
 	@Autowired
 	MovieServices movieServices;
+
+	@Autowired
+	ReviewSystemProxy reviewSystemProxy;
+
+	@Autowired
+	TicketSystemProxy ticketSystemProxy;
 
 	/*
 	 * @GetMapping("/getAllMoviesWithHateoas") private CollectionModel<Movie>
@@ -74,7 +91,8 @@ public class MovieController {
 	}
 
 	@GetMapping("/getMovieById")
-	private Optional<Movie> getMovieById(@RequestParam int movieId) {
+	@RateLimiter(name = "getMovieById_rl", fallbackMethod = "getReviewByMovieIdFallback")
+	public Optional<Movie> getMovieById(@RequestParam int movieId) {
 		// TODO Auto-generated method stub
 		Optional<Movie> movie = movieServices.getMovieById(movieId);
 
@@ -142,6 +160,37 @@ public class MovieController {
 		if (existingMovie.isEmpty())
 			throw new MovieNotFoundException("Movie with ID:" + movieId + " does not exist.");
 		movieServices.deleteMovieById(movieId);
+	}
+
+	@GetMapping("/getReviewByMovieId")
+	@Retry(name = "review_proxy_retry", fallbackMethod = "getReviewByMovieIdFallback")
+	public Optional<Review> getReviewByMovieId(@RequestParam int movieId) {
+		/*
+		 * HashMap<String, Integer> uriVariables = new HashMap<String, Integer>();
+		 * uriVariables.put("movieId", movieId); ResponseEntity<Review> responseEntity =
+		 * new RestTemplate().getForEntity(
+		 * "http://localhost:7000/review/getReviewByMovieId?movieId={movieId}",
+		 * Review.class, uriVariables);
+		 * 
+		 * Review review = responseEntity.getBody();
+		 */
+		logger.info("-------------->>>>>>>> Trying to invoke reviewSystemProxy");
+		return reviewSystemProxy.getReviewByMovieId(movieId);
+	}
+
+	@GetMapping("/getTicketsByMovieId")
+	@CircuitBreaker(name = "ticket_proxy_cb", fallbackMethod = "getTicketsByMovieIdProxy")
+	public List<Ticket> getTicketsByMovieId(@RequestParam int movieId) {
+		logger.info("-------------->>>>>>>> Trying to invoke ticketSystemProxy");
+		return ticketSystemProxy.getTicketsByMovieId(movieId);
+	}
+
+	public Optional<Review> getReviewByMovieIdFallback(Exception ex) {
+		return Optional.ofNullable(new Review(1, "Fallback Review Description", 4));
+	}
+
+	public List<Ticket> getTicketsByMovieIdProxy(Exception ex) {
+		return List.of(new Ticket(1, 150, "10am-2pm", 4), new Ticket(1, 150, "2pm-6pm", 3));
 	}
 
 }
